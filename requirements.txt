@@ -1,0 +1,8 @@
+transformers
+datasets
+peft
+accelerate
+sentencepiece
+tiktoken
+pandas
+wandb
