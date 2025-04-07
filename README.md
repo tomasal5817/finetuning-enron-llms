@@ -8,4 +8,4 @@ This repository is a part of the master thesis Assessing privacy vs. efficiency 
   - pip install -r requirements.txt
 
 ## Run multiple GPUs 
-  - accelerate launch --multi_gpu finetune_clm.py
+ 
