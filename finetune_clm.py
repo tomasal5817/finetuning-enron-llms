@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict, load_from_disk
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -29,21 +29,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    model_name: str = field(default="Qwen/Qwen2.5-14B-Instruct", metadata={"help": "Base model name"})
+    model_name: str = field(default="Qwen/Qwen2.5-0.5B-Instruct", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
-    precision: str = field(default="bf16", metadata={"help": "fp16 nanor bf16"})
+    precision: str = field(default="bf16", metadata={"help": "fp16 or bf16"})
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
-    per_device_train_batch_size: int = field(default=2)
+    per_device_train_batch_size: int = field(default=1)  # Reduced to prevent GPU memory overflow
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
     block_size: int = field(default=-1, metadata={"help": "Block size for sequences"})
 
 def load_enron_dataset():
-    from enron import CustomEnron
+    try:
+        from enron import CustomEnron
+    except ImportError:
+        raise ImportError("The 'enron' module is required to load the Enron dataset. Please install it.")
+    
     logger.info("Loading Enron dataset...")
     print_highlighted("Loading Enron dataset...")
     enron_builder = CustomEnron()
@@ -63,40 +67,44 @@ def main():
     logger.info(f"Setting seed to: {args.seed}")
     set_seed(args.seed)
 
-    # Load dataset
     if args.use_enron:
         raw_datasets = load_enron_dataset()
-        #train_dataset = raw_datasets["train"]
     else:
         raw_datasets = load_dataset("json", data_files=args.dataset_path)
+    
+    if "train" not in raw_datasets:
+        raise ValueError("Dataset must contain a 'train' split.")
+    if "text" not in raw_datasets["train"].column_names:
+        raise ValueError("The 'train' split must contain a 'text' field.")
+    
+    print_highlighted('Print the first example')
+    print(raw_datasets["train"][0])  # Print the first example
+    print_highlighted('Check column names')
+    print(raw_datasets["train"].column_names)  # Check column names
 
-    if "train" not in raw_datasets or "text" not in raw_datasets["train"].column_names:
-        raise ValueError("Dataset must contain a 'text' field in the 'train' split.")
-
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
     tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Auto-set block size
     if args.block_size == -1:
         args.block_size = min(tokenizer.model_max_length, 2048)
-    
         logger.info(f"Auto-detected block size: {args.block_size}")
         print_highlighted(f"Auto-detected block size: {args.block_size}")
 
-    # Load model
+    torch_dtype = (
+        torch.bfloat16 if args.precision == "bf16"
+        else torch.float16 if args.precision == "fp16"
+        else torch.float32
+    )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if args.precision == "bf16" else torch.float16
+        torch_dtype=torch_dtype
     )
 
-    # Optional: enable gradient checkpointing to save memory
     model.gradient_checkpointing_enable()
-
-    # Apply LoRA if needed
+    model.config.use_cache = False  
     if args.use_lora:
         logger.info("Applying LoRA")
         print_highlighted("Applying LoRA")
@@ -110,73 +118,90 @@ def main():
         model = get_peft_model(model, peft_config)
     else:
         logger.warning("Training full model without PEFT/LoRA. This may require substantial GPU memory.")
-
-    # Tokenize and chunk
+    
+    # Explicitly move the model to the GPU (optional with Trainer)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    
     def tokenize_function(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
             padding="max_length",
-            max_length= 2048     #tokenizer.model_max_length
+            max_length=args.block_size
         )
 
-    print_highlighted('Tokenize Dataset')
-
-    tokenized_datasets = {
-        split: raw_datasets[split].map(
-            tokenize_function,
-            batched=True,
-            remove_columns=raw_datasets[split].column_names,
-            num_proc=4
-        )
-        for split in raw_datasets
-    }
+    tokenized_path = os.path.join(args.output_dir, "tokenized_enron")
+    if os.path.exists(tokenized_path):
+        print_highlighted("Loading tokenized dataset from disk")
+        tokenized_datasets = load_from_disk(tokenized_path)
+    else:
+        print_highlighted("Tokenizing dataset...")
+        tokenized_datasets = DatasetDict({
+            split: raw_datasets[split].map(
+                tokenize_function,
+                batched=True,
+                remove_columns=raw_datasets[split].column_names,
+                num_proc=4
+            )
+            for split in raw_datasets
+        })
+        print_highlighted(f"Saving tokenized dataset to {tokenized_path}")
+        tokenized_datasets.save_to_disk(tokenized_path)
 
     def group_texts(examples, block_size):
-        # Concatenate all texts.
-        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+        concatenated_examples = {
+            k: sum((ex for ex in examples[k] if ex), [])
+            for k in examples.keys()
+        }
         total_length = len(concatenated_examples[list(examples.keys())[0]])
-        
-        # Drop remainder to make perfect chunks
         if total_length >= block_size:
             total_length = (total_length // block_size) * block_size
-        
-        # Chunk into blocks of `block_size`
         result = {
             k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
             for k, t in concatenated_examples.items()
         }
-
-        # Copy input_ids to labels for causal LM
         result["labels"] = result["input_ids"].copy()
         return result
-
-    # Group texts
-    print_highlighted('Group text')
-    lm_datasets = {
-        split: tokenized_datasets[split].map(
-            lambda examples, _: group_texts(examples, block_size=args.block_size),
-            group_texts,
-            batched=True,
-            num_proc=4
-        )
-        for split in tokenized_datasets
-    }
     
+    grouped_path = os.path.join(args.output_dir, f"lm_datasets_block{args.block_size}")
+    if os.path.exists(grouped_path):
+        print_highlighted(f"Loading grouped dataset from {grouped_path}")
+        lm_datasets = load_from_disk(grouped_path)
+    else:
+        print_highlighted('Group text')
+        lm_datasets = DatasetDict({
+            split: tokenized_datasets[split].map(
+                lambda examples: group_texts(examples, block_size=args.block_size),
+                batched=True,
+                num_proc=4
+            )
+            for split in tokenized_datasets
+        })
+        print_highlighted(f"Saving grouped dataset to {grouped_path}")
+        lm_datasets.save_to_disk(grouped_path)
+
+    tokenizer.pad_token = tokenizer.eos_token
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
+   # Training Arguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
+        do_train=True,      
+        do_eval=True,       
+        run_name="fine-tuning-run",  
         eval_strategy="steps",
         eval_steps=200,
         save_total_limit=2,
         save_strategy="steps",
         save_steps=5000,
         overwrite_output_dir=True,
-        logging_strategy="steps",      
+        logging_strategy="steps",
         logging_steps=10,
+        logging_first_step=True,
         learning_rate=2e-5,
         per_device_train_batch_size=args.per_device_train_batch_size,
+        gradient_accumulation_steps=16,
         num_train_epochs=args.num_train_epochs,
         weight_decay=0.01,
         logging_dir=os.path.join(args.output_dir, "logs"),
@@ -187,27 +212,32 @@ def main():
         report_to="wandb",
     )
 
-    if args.push_to_hub and args.hub_token:
+    if args.push_to_hub:
+        if not args.hub_token:
+            raise ValueError("Hub token must be provided when pushing to the Hugging Face Hub.")
         login(token=args.hub_token)
 
     print_highlighted("Starting fine-tuning...")
 
+    eval_dataset = lm_datasets.get("validation", lm_datasets["test"])
+    
+    # Initialize the Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=lm_datasets["train"],
-        eval_dataset=lm_datasets["validation"],  
-        tokenizer=tokenizer,
+        eval_dataset=lm_datasets["validation"],
         data_collator=data_collator,
-        #callbacks=[GradientNormCallback(log_every=100)]
+        processing_class=tokenizer,  # Use processing_class instead of tokenizer
     )
 
     trainer.train()
     trainer.save_model(args.output_dir)
+    tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
 
     print_highlighted(f"Model saved to {args.output_dir}")
 
-    metrics = trainer.evaluate(eval_dataset=lm_datasets["test"])
+    metrics = trainer.evaluate(eval_dataset=lm_datasets.get("test", eval_dataset))
     print_highlighted(f"Test set evaluation: {metrics}")
 
     if args.push_to_hub:
@@ -219,3 +249,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -68,9 +68,6 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
 
         self.data = all_texts
 
-        #if self.config.shuffle_facts_seed > 0:
-        #    self.data = [self.data[i] for i in rnd_idx(N=len(self.data), seed=self.config.shuffle_facts_seed)]
-
         return [
             datasets.SplitGenerator(  
                 name=datasets.Split.TRAIN,
@@ -109,18 +106,4 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
                 yield f"{unique_identifier}", {self._TEXT: text}
                 unique_identifier += 1
 
-    """     
-    if __name__ == "__main__":
-
-        # Load the Enron dataset directly
-        ds = load_dataset("LLM-PBE/enron-email")
-        texts = ds["train"]["text"]
-
-        # Save to JSON
-        with open("enron_data.json", "w") as f:
-            for t in texts:
-                json.dump({"text": t}, f)
-                f.write("\n")
-
-        print_highlighted("Saved Enron dataset to enron_data.json")
-    """  
+ 
