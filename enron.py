@@ -51,6 +51,7 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
         )
 
     def _split_generators(self, dl_manager):
+        # TODO: Consider the split rate between train, test, and validation
         self.df = load_dataset("LLM-PBE/enron-email")
         print("done load data")
         print_highlighted(f"self.config.pseudonymize: {self.config.pseudonymize}")

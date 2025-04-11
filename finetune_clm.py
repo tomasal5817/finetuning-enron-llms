@@ -33,14 +33,14 @@ class FineTuneArgs:
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
-    precision: str = field(default="bf16", metadata={"help": "fp16 or bf16"})
+    precision: str = field(default="fp16", metadata={"help": "fp16 or bf16"})
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
     per_device_train_batch_size: int = field(default=1)  # Reduced to prevent GPU memory overflow
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
-    block_size: int = field(default=-1, metadata={"help": "Block size for sequences"})
+    block_size: int = field(default=512, metadata={"help": "Block size for sequences"})
 
 def load_enron_dataset():
     try:
@@ -87,11 +87,6 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if args.block_size == -1:
-        args.block_size = min(tokenizer.model_max_length, 2048)
-        logger.info(f"Auto-detected block size: {args.block_size}")
-        print_highlighted(f"Auto-detected block size: {args.block_size}")
-
     torch_dtype = (
         torch.bfloat16 if args.precision == "bf16"
         else torch.float16 if args.precision == "fp16"
@@ -117,21 +112,21 @@ def main():
         )
         model = get_peft_model(model, peft_config)
     else:
-        logger.warning("Training full model without PEFT/LoRA. This may require substantial GPU memory.")
+        logger.warning("Training full model without PEFT/LoRA.")
     
     # Explicitly move the model to the GPU (optional with Trainer)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     model.to(device)
     
     def tokenize_function(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
-            padding="max_length",
-            max_length=args.block_size
+            padding=False,
+            max_length=tokenizer.model_max_length 
         )
 
-    tokenized_path = os.path.join(args.output_dir, "tokenized_enron")
+    tokenized_path = os.path.join(args.output_dir, f"tokenized_maxlength{model_max_length}")
     if os.path.exists(tokenized_path):
         print_highlighted("Loading tokenized dataset from disk")
         tokenized_datasets = load_from_disk(tokenized_path)
@@ -226,9 +221,8 @@ def main():
         model=model,
         args=training_args,
         train_dataset=lm_datasets["train"],
-        eval_dataset=lm_datasets["validation"],
+        eval_dataset=eval_dataset,   
         data_collator=data_collator,
-        processing_class=tokenizer,  # Use processing_class instead of tokenizer
     )
 
     trainer.train()
