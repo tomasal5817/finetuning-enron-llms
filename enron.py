@@ -75,22 +75,22 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
                 gen_kwargs={
                     "split": "train",
                     "start": 0.0,
-                    "end": 0.45  
+                    "end": 0.80  
                 },
             ),
             datasets.SplitGenerator(  
                 name=datasets.Split.TEST,
                 gen_kwargs={
                     "split": "test",
-                    "start": 0.45,
-                    "end": 0.55
+                    "start": 0.80,
+                    "end": 0.90
                 },
             ),
             datasets.SplitGenerator( 
                 name=datasets.Split.VALIDATION,
                 gen_kwargs={
                     "split": "validation",
-                    "start": 0.55,
+                    "start": 0.90,
                     "end": 1.0  
                 },
             ),

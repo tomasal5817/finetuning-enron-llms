@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    model_name: str = field(default="Qwen/Qwen2.5-0.5B-Instruct", metadata={"help": "Base model name"})
+    model_name: str = field(default="allenai/OLMoE-1B-7B-0125-Instruct", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
@@ -189,12 +189,12 @@ def main():
         eval_steps=200,
         save_total_limit=2,
         save_strategy="steps",
-        save_steps=5000,
+        save_steps=2000,
         overwrite_output_dir=True,
         logging_strategy="steps",
         logging_steps=10,
         logging_first_step=True,
-        learning_rate=2e-5,
+        learning_rate=5e-5, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=16,
         num_train_epochs=args.num_train_epochs,
