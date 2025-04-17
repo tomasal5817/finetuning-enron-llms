@@ -37,7 +37,7 @@ class FineTuneArgs:
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
-    per_device_train_batch_size: int = field(default=1)  # Reduced to prevent GPU memory overflow
+    per_device_train_batch_size: int = field(default=32)  # Reduced to prevent GPU memory overflow
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
     block_size: int = field(default=512, metadata={"help": "Block size for sequences"})
@@ -104,6 +104,16 @@ def main():
         logger.info("Applying LoRA")
         print_highlighted("Applying LoRA")
         peft_config = LoraConfig(
+            target_modules=[
+              "q_proj",
+              "k_proj",
+              "v_proj",
+              "o_proj",
+              "gate_proj",
+              "up_proj",
+              "down_proj",
+              "lm_head",
+            ],
             task_type=TaskType.CAUSAL_LM,
             r=8,
             lora_alpha=32,
@@ -117,16 +127,18 @@ def main():
     # Explicitly move the model to the GPU (optional with Trainer)
     device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     model.to(device)
-    
+
+    max_length=min(tokenizer.model_max_length, 2048)
+
     def tokenize_function(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
             padding=False,
-            max_length=tokenizer.model_max_length 
+            max_length=max_length 
         )
 
-    tokenized_path = os.path.join(args.output_dir, f"tokenized_maxlength{model_max_length}")
+    tokenized_path = os.path.join(args.output_dir, f"tokenized_maxlength{max_length}")
     if os.path.exists(tokenized_path):
         print_highlighted("Loading tokenized dataset from disk")
         tokenized_datasets = load_from_disk(tokenized_path)
@@ -137,7 +149,7 @@ def main():
                 tokenize_function,
                 batched=True,
                 remove_columns=raw_datasets[split].column_names,
-                num_proc=4
+                num_proc=1
             )
             for split in raw_datasets
         })
@@ -194,7 +206,7 @@ def main():
         logging_strategy="steps",
         logging_steps=10,
         logging_first_step=True,
-        learning_rate=5e-5, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
+        learning_rate=1e-4, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=16,
         num_train_epochs=args.num_train_epochs,
