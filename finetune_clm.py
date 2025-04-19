@@ -1,4 +1,3 @@
-import os
 import logging
 import wandb
 from dataclasses import dataclass, field
@@ -14,6 +13,7 @@ from transformers import (
     DataCollatorForLanguageModeling,
     HfArgumentParser,
     set_seed,
+    GenerationConfig,
 )
 
 from peft import get_peft_model, LoraConfig, TaskType
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    model_name: str = field(default="allenai/OLMoE-1B-7B-0125-Instruct", metadata={"help": "Base model name"})
+    model_name: str = field(default="tiiuae/Falcon3-10B-Instruct", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
@@ -37,7 +37,9 @@ class FineTuneArgs:
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
-    per_device_train_batch_size: int = field(default=32)  # Reduced to prevent GPU memory overflow
+    per_device_train_batch_size: int = field(default=8)  # Reduced to prevent GPU memory overflow
+    per_device_eval_batch_size: int = field(default=8)
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Batch size = per_device_train_batch_size *  gradient_accumulation_steps"}) #TODO:
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
     block_size: int = field(default=512, metadata={"help": "Block size for sequences"})
@@ -58,6 +60,7 @@ def load_enron_dataset():
     return ds
 
 def main():
+
     parser = HfArgumentParser(FineTuneArgs)
     args = parser.parse_args_into_dataclasses()[0]
 
@@ -95,24 +98,32 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         trust_remote_code=True,
-        torch_dtype=torch_dtype
-    )
+        torch_dtype=torch_dtype,
+    )   
+    #generation_config=GenerationConfig(
+    #  do_sample=False,
+    #  temperature=None,
+    #  top_p=None,
+      # possibly include max_new_tokens, num_beams, etc.
+    #)
 
     model.gradient_checkpointing_enable()
     model.config.use_cache = False  
+    model.config.pad_token_id = tokenizer.pad_token_id
+
     if args.use_lora:
         logger.info("Applying LoRA")
         print_highlighted("Applying LoRA")
         peft_config = LoraConfig(
             target_modules=[
-              "q_proj",
-              "k_proj",
-              "v_proj",
-              "o_proj",
-              "gate_proj",
-              "up_proj",
-              "down_proj",
-              "lm_head",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "lm_head", 
             ],
             task_type=TaskType.CAUSAL_LM,
             r=8,
@@ -121,11 +132,19 @@ def main():
             bias="none"
         )
         model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+        for name, param in model.named_parameters():
+            if param.requires_grad and param.grad is None:
+                print(f"{name} is trainable but has no gradient!")
     else:
         logger.warning("Training full model without PEFT/LoRA.")
     
+    model.train()
+    model.enable_input_require_grads()
+    print_highlighted(f"Model training mode: {model.training}")
+    
     # Explicitly move the model to the GPU (optional with Trainer)
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     max_length=min(tokenizer.model_max_length, 2048)
@@ -198,7 +217,8 @@ def main():
         do_eval=True,       
         run_name="fine-tuning-run",  
         eval_strategy="steps",
-        eval_steps=200,
+        # evaluation_strategy="steps",
+        eval_steps=4003,
         save_total_limit=2,
         save_strategy="steps",
         save_steps=2000,
@@ -206,9 +226,9 @@ def main():
         logging_strategy="steps",
         logging_steps=10,
         logging_first_step=True,
-        learning_rate=1e-4, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
+        learning_rate=1e-5, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
         per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=16,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_train_epochs=args.num_train_epochs,
         weight_decay=0.01,
         logging_dir=os.path.join(args.output_dir, "logs"),
@@ -224,6 +244,16 @@ def main():
             raise ValueError("Hub token must be provided when pushing to the Hugging Face Hub.")
         login(token=args.hub_token)
 
+    print(lm_datasets["train"][33])
+    
+    inputs = tokenizer("Test sentence", return_tensors="pt").to(model.device)
+    inputs['labels'] = inputs['input_ids'].clone()
+    outputs = model(**inputs)
+    outputs.loss.backward()
+    for name, param in model.named_parameters():
+        if param.requires_grad and param.grad is not None:
+            print(name, param.grad.norm())
+    
     print_highlighted("Starting fine-tuning...")
 
     eval_dataset = lm_datasets.get("validation", lm_datasets["test"])
@@ -237,7 +267,7 @@ def main():
         data_collator=data_collator,
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True)
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
 
