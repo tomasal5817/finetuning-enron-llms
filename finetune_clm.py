@@ -1,3 +1,4 @@
+import os
 import logging
 import wandb
 from dataclasses import dataclass, field
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    model_name: str = field(default="tiiuae/Falcon3-10B-Instruct", metadata={"help": "Base model name"})
+    model_name: str = field(default="allenai/Llama-3.1-Tulu-3.1-8B", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
@@ -37,8 +38,8 @@ class FineTuneArgs:
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
-    per_device_train_batch_size: int = field(default=8)  # Reduced to prevent GPU memory overflow
-    per_device_eval_batch_size: int = field(default=8)
+    per_device_train_batch_size: int = field(default=32)  # Reduced to prevent GPU memory overflow
+    per_device_eval_batch_size: int = field(default=32)
     gradient_accumulation_steps: int = field(default=1, metadata={"help": "Batch size = per_device_train_batch_size *  gradient_accumulation_steps"}) #TODO:
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
@@ -99,13 +100,7 @@ def main():
         args.model_name,
         trust_remote_code=True,
         torch_dtype=torch_dtype,
-    )   
-    #generation_config=GenerationConfig(
-    #  do_sample=False,
-    #  temperature=None,
-    #  top_p=None,
-      # possibly include max_new_tokens, num_beams, etc.
-    #)
+    )
 
     model.gradient_checkpointing_enable()
     model.config.use_cache = False  
@@ -143,18 +138,39 @@ def main():
     model.enable_input_require_grads()
     print_highlighted(f"Model training mode: {model.training}")
     
-    # Explicitly move the model to the GPU (optional with Trainer)
+    # Move the model to the GPU (optional with Trainer)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    max_length=min(tokenizer.model_max_length, 2048)
+    # Preserve chat template
+    max_length = min(tokenizer.model_max_length, 2048)
+    chat_temp_tokens = tokenizer("<|user|>\n<|assistant|>\n<|endoftext|>", add_special_tokens=False)["input_ids"]
+    reserved_length = len(chat_temp_tokens)
 
     def tokenize_function(examples):
+        formatted = []
+        for email_text in examples["text"]:
+            max_user_tokens = tokenizer.model_max_length - reserved_length
+
+            tokenized_input = tokenizer(
+                email_text,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=max_user_tokens
+            )["input_ids"]
+
+            # input_ids already extracted above
+            input_ids = tokenized_input
+            truncated_email = tokenizer.decode(input_ids, skip_special_tokens=False)
+
+            chat_format = f"<|user|>\n{truncated_email}\n<|assistant|>\n<|endoftext|>"
+            formatted.append(chat_format)
+
         return tokenizer(
-            examples["text"],
-            truncation=True,
+            formatted,
+            truncation=False,
             padding=False,
-            max_length=max_length 
+	    max_length=max_length
         )
 
     tokenized_path = os.path.join(args.output_dir, f"tokenized_maxlength{max_length}")
@@ -218,15 +234,15 @@ def main():
         run_name="fine-tuning-run",  
         eval_strategy="steps",
         # evaluation_strategy="steps",
-        eval_steps=4003,
+        eval_steps=2509, 
         save_total_limit=2,
         save_strategy="steps",
-        save_steps=2000,
+        save_steps=2509,
         overwrite_output_dir=True,
         logging_strategy="steps",
         logging_steps=10,
         logging_first_step=True,
-        learning_rate=1e-5, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
+        learning_rate=1e-4, # Typical Range: 1e-4 (0.0001) to 5e-5 (0.00005).
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_train_epochs=args.num_train_epochs,
@@ -267,7 +283,7 @@ def main():
         data_collator=data_collator,
     )
 
-    trainer.train(resume_from_checkpoint=True)
+    trainer.train(resume_from_checkpoint=False)
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
 
