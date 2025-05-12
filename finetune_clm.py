@@ -30,27 +30,28 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    model_name: str = field(default="allenai/Llama-3.1-Tulu-3.1-8B", metadata={"help": "Base model name"})
+    resume_from_checkpoint: bool = field(default=False)
+    model_name: str = field(default="Qwen/Qwen3-8B", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
     output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
     use_lora: bool = field(default=True)
-    precision: str = field(default="fp16", metadata={"help": "fp16 or bf16"})
+    precision: str = field(default="bf16", metadata={"help": "fp16 or bf16"})
     push_to_hub: bool = field(default=False)
     hub_token: Optional[str] = field(default=None)
     num_train_epochs: int = field(default=3)
-    per_device_train_batch_size: int = field(default=32)  # Reduced to prevent GPU memory overflow
-    per_device_eval_batch_size: int = field(default=32)
+    per_device_train_batch_size: int = field(default=2)  # Reduced to prevent GPU memory overflow
+    per_device_eval_batch_size: int = field(default=2)
     gradient_accumulation_steps: int = field(default=1, metadata={"help": "Batch size = per_device_train_batch_size *  gradient_accumulation_steps"}) #TODO:
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
-    block_size: int = field(default=512, metadata={"help": "Block size for sequences"})
+    block_size: int = field(default=512, metadata={"help": "Block size for sequences"})  
 
 def load_enron_dataset():
     try:
         from enron import CustomEnron
     except ImportError:
         raise ImportError("The 'enron' module is required to load the Enron dataset. Please install it.")
-    
+
     logger.info("Loading Enron dataset...")
     print_highlighted("Loading Enron dataset...")
     enron_builder = CustomEnron()
@@ -100,25 +101,29 @@ def main():
         args.model_name,
         trust_remote_code=True,
         torch_dtype=torch_dtype,
+        #device_map="auto"
     )
 
-    model.gradient_checkpointing_enable()
-    model.config.use_cache = False  
+    #model.gradient_checkpointing_enable()
+    model.config.use_cache = False
     model.config.pad_token_id = tokenizer.pad_token_id
 
     if args.use_lora:
         logger.info("Applying LoRA")
         print_highlighted("Applying LoRA")
         peft_config = LoraConfig(
+            # falcon 7b
+            #target_modules=[
+            #    "query_key_value",
+            #    "dense",
+            #    "dense_h_to_4h",
+            #    "dense_4h_to_h",
+            #],
             target_modules=[
                 "q_proj",
                 "k_proj",
                 "v_proj",
                 "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-                "lm_head", 
             ],
             task_type=TaskType.CAUSAL_LM,
             r=8,
@@ -133,25 +138,115 @@ def main():
                 print(f"{name} is trainable but has no gradient!")
     else:
         logger.warning("Training full model without PEFT/LoRA.")
-    
+
     model.train()
     model.enable_input_require_grads()
     print_highlighted(f"Model training mode: {model.training}")
-    
+
     # Move the model to the GPU (optional with Trainer)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Preserve chat template
+    '''
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            truncation=True,
+            padding=False,
+            max_length=max_length,
+            add_special_tokens=True
+        )
+
+        for i, line in enumerate(tokenized["input_ids"]):
+
+            if len(line) >= max_length:
+                line = line[:max_length]
+                line[-1] = tokenizer.eos_token_id
+            else:
+                line.append(tokenizer.eos_token_id)
+
+            tokenized["input_ids"][i] = line
+
+        return tokenized
+
+   
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            truncation=True,
+            padding=False,
+            max_length=max_length,
+        )
+
+        for i,line in enumerate(tokenized["input_ids"]):
+            line = [tokenizer.bos_token_id] + line
+            if len(line) >= max_length:
+                tokenized["input_ids"][i][-1] = tokenizer.eos_token_id
+            else:
+                tokenized["input_ids"][i].append(tokenizer.eos_token_id)
+
+        return tokenized
+    '''
+    '''
+    # falcon tokenizer 
     max_length = min(tokenizer.model_max_length, 2048)
-    chat_temp_tokens = tokenizer("<|user|>\n<|assistant|>\n<|endoftext|>", add_special_tokens=False)["input_ids"]
+
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            add_special_tokens=False,  # No BOS/EOS from tokenizer
+            padding=False,
+            truncation=False,         # Handle truncation manually
+            max_length=max_length,
+            return_attention_mask=False
+        )
+        
+        input_ids = []
+        attention_masks = []
+        for i, line in enumerate(tokenized["input_ids"]):
+            # Add BOS 
+            # line = [tokenizer.bos_token_id] + line
+
+            # Truncate manually
+            if len(line) > max_length-1:
+                line = line[:max_length-1]
+            
+            line.append(tokenizer.eos_token_id)
+            attention_mask = [1] * len(line)
+            input_ids.append(line)
+            attention_masks.append(attention_mask)
+            #tokenized["input_ids"][i] = line
+            #tokenized["attention_mask"][i] = attention_mask
+        #return tokenized
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_masks
+        }
+    '''
+    '''
+    def tokenize_function(examples):
+        return tokenizer(
+            examples["text"],
+            add_special_tokens=True,
+            truncation=True,
+            padding=False,
+            max_length=max_length
+    )
+    '''
+    # Qwen3 8B tokenizer
+    max_length = min(tokenizer.model_max_length, 2048)
+
+    # Tokenz chat template 
+    chat_temp_tokens = tokenizer(
+    "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<|im_end|>",
+    add_special_tokens=False
+    )["input_ids"]
     reserved_length = len(chat_temp_tokens)
 
     def tokenize_function(examples):
         formatted = []
         for email_text in examples["text"]:
             max_user_tokens = tokenizer.model_max_length - reserved_length
-
             tokenized_input = tokenizer(
                 email_text,
                 add_special_tokens=False,
@@ -159,18 +254,23 @@ def main():
                 max_length=max_user_tokens
             )["input_ids"]
 
-            # input_ids already extracted above
-            input_ids = tokenized_input
-            truncated_email = tokenizer.decode(input_ids, skip_special_tokens=False)
+            truncated_email = tokenizer.decode(tokenized_input, skip_special_tokens=False)
 
-            chat_format = f"<|user|>\n{truncated_email}\n<|assistant|>\n<|endoftext|>"
+            # Add Qwen3 chat template
+            chat_format = (
+                "<|im_start|>user\n"
+                f"{truncated_email}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+                "<|im_end|>"
+            )
             formatted.append(chat_format)
 
+        # Tokenize the fully formatted chat strings
         return tokenizer(
             formatted,
             truncation=False,
             padding=False,
-	    max_length=max_length
+            max_length=max_length
         )
 
     tokenized_path = os.path.join(args.output_dir, f"tokenized_maxlength{max_length}")
@@ -190,7 +290,12 @@ def main():
         })
         print_highlighted(f"Saving tokenized dataset to {tokenized_path}")
         tokenized_datasets.save_to_disk(tokenized_path)
+    
+    tokenizer.pad_token = tokenizer.eos_token
 
+    for example in tokenized_datasets:
+        if not example.strip():  
+            print("Empty text:", example)
     def group_texts(examples, block_size):
         concatenated_examples = {
             k: sum((ex for ex in examples[k] if ex), [])
@@ -205,7 +310,7 @@ def main():
         }
         result["labels"] = result["input_ids"].copy()
         return result
-    
+
     grouped_path = os.path.join(args.output_dir, f"lm_datasets_block{args.block_size}")
     if os.path.exists(grouped_path):
         print_highlighted(f"Loading grouped dataset from {grouped_path}")
@@ -223,21 +328,20 @@ def main():
         print_highlighted(f"Saving grouped dataset to {grouped_path}")
         lm_datasets.save_to_disk(grouped_path)
 
-    tokenizer.pad_token = tokenizer.eos_token
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
    # Training Arguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        do_train=True,      
-        do_eval=True,       
-        run_name="fine-tuning-run",  
+        do_train=True,
+        do_eval=True,
+        run_name="fine-tuning-run",
         eval_strategy="steps",
         # evaluation_strategy="steps",
-        eval_steps=2509, 
+        eval_steps=50000,
         save_total_limit=2,
         save_strategy="steps",
-        save_steps=2509,
+        save_steps=50000,
         overwrite_output_dir=True,
         logging_strategy="steps",
         logging_steps=10,
@@ -279,18 +383,18 @@ def main():
         model=model,
         args=training_args,
         train_dataset=lm_datasets["train"],
-        eval_dataset=eval_dataset,   
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
 
-    trainer.train(resume_from_checkpoint=False)
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
 
     print_highlighted(f"Model saved to {args.output_dir}")
 
     metrics = trainer.evaluate(eval_dataset=lm_datasets.get("test", eval_dataset))
-    print_highlighted(f"Test set evaluation: {metrics}")
+    print(f"Test set evaluation: {metrics}")
 
     if args.push_to_hub:
         trainer.push_to_hub()
@@ -301,4 +405,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
