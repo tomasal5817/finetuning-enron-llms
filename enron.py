@@ -51,12 +51,17 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
         )
 
     def _split_generators(self, dl_manager):
-        # TODO: Consider the split rate between train, test, and validation
+        '''
+        Dataset split is set to match fine-tuned models in the project:
+        Assessing privacy vs. efficiency tradeoffs in open-source Large-Language Models
+        '''
         self.df = load_dataset("LLM-PBE/enron-email")
         print("done load data")
         print_highlighted(f"self.config.pseudonymize: {self.config.pseudonymize}")
         self.data = [item for item in self.df["train"]["text"]]
-        
+        if self.config.shuffle_facts_seed > 0:
+            self.data = [self.data[i] for i in rnd_idx(N=len(self.data), seed=self.config.shuffle_facts_seed)]
+        '''
         all_texts = (
             self.df["train"]["text"]
             + self.df.get("test", {"text": []})["text"]
@@ -68,7 +73,7 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
             all_texts = [all_texts[i] for i in rnd_idx(N=len(all_texts), seed=self.config.shuffle_facts_seed)]
 
         self.data = all_texts
-
+        '''
         return [
             datasets.SplitGenerator(  
                 name=datasets.Split.TRAIN,
