@@ -215,7 +215,7 @@ def main():
         """
         Concatenates and chunks tokenized inputs into fixed-size blocks for training, reduces data-load 
 
-        Note: Consider batching when training using a chat template as token chunking is more suited fore training causal LLMs 
+        Note: Consider tokenizing with padding when training using a chat template, as  grouping texts is more suited for training causal LLMs on plain text
         """
         concatenated_examples = {
             k: sum((ex for ex in examples[k] if ex), [])
