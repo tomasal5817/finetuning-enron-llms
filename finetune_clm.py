@@ -33,7 +33,7 @@ class FineTuneArgs:
     resume_from_checkpoint: bool = field(default=False)
     model_name: str = field(default="Qwen/Qwen3-8B", metadata={"help": "Base model name"})
     dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
-    output_dir: str = field(default="./output", metadata={"help": "Where to save model"})
+    output_dir: str = field(default="./output", metadata={"help": "Directory to save the fine-tuned model"})
     use_lora: bool = field(default=True)
     precision: str = field(default="bf16", metadata={"help": "fp16 or bf16"})
     push_to_hub: bool = field(default=False)
@@ -41,10 +41,10 @@ class FineTuneArgs:
     num_train_epochs: int = field(default=3)
     per_device_train_batch_size: int = field(default=2)  # Reduced to prevent GPU memory overflow
     per_device_eval_batch_size: int = field(default=2)
-    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Batch size = per_device_train_batch_size *  gradient_accumulation_steps"}) #TODO:
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Batch size = per_device_train_batch_size *  gradient_accumulation_steps"}) 
     use_enron: bool = field(default=True)
     seed: int = field(default=42)
-    block_size: int = field(default=512, metadata={"help": "Block size for sequences"})  
+    block_size: int = field(default=512, metadata={"help": "Maximum sequence length per training example (in tokens)"})  
 
 def load_enron_dataset():
     try:
@@ -62,7 +62,6 @@ def load_enron_dataset():
     return ds
 
 def main():
-
     parser = HfArgumentParser(FineTuneArgs)
     args = parser.parse_args_into_dataclasses()[0]
 
@@ -101,7 +100,6 @@ def main():
         args.model_name,
         trust_remote_code=True,
         torch_dtype=torch_dtype,
-        #device_map="auto"
     )
 
     #model.gradient_checkpointing_enable()
@@ -112,13 +110,7 @@ def main():
         logger.info("Applying LoRA")
         print_highlighted("Applying LoRA")
         peft_config = LoraConfig(
-            # falcon 7b
-            #target_modules=[
-            #    "query_key_value",
-            #    "dense",
-            #    "dense_h_to_4h",
-            #    "dense_4h_to_h",
-            #],
+            # Limit LoRA to attention layers
             target_modules=[
                 "q_proj",
                 "k_proj",
@@ -147,92 +139,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    '''
-    def tokenize_function(examples):
-        tokenized = tokenizer(
-            examples["text"],
-            truncation=True,
-            padding=False,
-            max_length=max_length,
-            add_special_tokens=True
-        )
-
-        for i, line in enumerate(tokenized["input_ids"]):
-
-            if len(line) >= max_length:
-                line = line[:max_length]
-                line[-1] = tokenizer.eos_token_id
-            else:
-                line.append(tokenizer.eos_token_id)
-
-            tokenized["input_ids"][i] = line
-
-        return tokenized
-
-   
-    def tokenize_function(examples):
-        tokenized = tokenizer(
-            examples["text"],
-            truncation=True,
-            padding=False,
-            max_length=max_length,
-        )
-
-        for i,line in enumerate(tokenized["input_ids"]):
-            line = [tokenizer.bos_token_id] + line
-            if len(line) >= max_length:
-                tokenized["input_ids"][i][-1] = tokenizer.eos_token_id
-            else:
-                tokenized["input_ids"][i].append(tokenizer.eos_token_id)
-
-        return tokenized
-    '''
-    '''
-    # falcon tokenizer 
-    max_length = min(tokenizer.model_max_length, 2048)
-
-    def tokenize_function(examples):
-        tokenized = tokenizer(
-            examples["text"],
-            add_special_tokens=False,  # No BOS/EOS from tokenizer
-            padding=False,
-            truncation=False,         # Handle truncation manually
-            max_length=max_length,
-            return_attention_mask=False
-        )
-        
-        input_ids = []
-        attention_masks = []
-        for i, line in enumerate(tokenized["input_ids"]):
-            # Add BOS 
-            # line = [tokenizer.bos_token_id] + line
-
-            # Truncate manually
-            if len(line) > max_length-1:
-                line = line[:max_length-1]
-            
-            line.append(tokenizer.eos_token_id)
-            attention_mask = [1] * len(line)
-            input_ids.append(line)
-            attention_masks.append(attention_mask)
-            #tokenized["input_ids"][i] = line
-            #tokenized["attention_mask"][i] = attention_mask
-        #return tokenized
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_masks
-        }
-    '''
-    '''
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"],
-            add_special_tokens=True,
-            truncation=True,
-            padding=False,
-            max_length=max_length
-    )
-    '''
     # Qwen3 8B tokenizer
     max_length = min(tokenizer.model_max_length, 2048)
 
@@ -244,6 +150,14 @@ def main():
     reserved_length = len(chat_temp_tokens)
 
     def tokenize_function(examples):
+        """
+        Tokenizes input emails using the Qwen3 chat template.
+
+        Formats each email as a user message in a chat but leaves the assistant's response block empty 
+        Truncated to max 2048 tokens
+
+        Note: The assistant’s answer is not included in the final tokenized output
+        """
         formatted = []
         for email_text in examples["text"]:
             max_user_tokens = tokenizer.model_max_length - reserved_length
@@ -296,7 +210,13 @@ def main():
     for example in tokenized_datasets:
         if not example.strip():  
             print("Empty text:", example)
+
     def group_texts(examples, block_size):
+        """
+        Concatenates and chunks tokenized inputs into fixed-size blocks for training, reduces data-load 
+
+        Note: Consider batching when training using a chat template as token chunking is more suited fore training causal LLMs 
+        """
         concatenated_examples = {
             k: sum((ex for ex in examples[k] if ex), [])
             for k in examples.keys()
@@ -312,6 +232,7 @@ def main():
         return result
 
     grouped_path = os.path.join(args.output_dir, f"lm_datasets_block{args.block_size}")
+
     if os.path.exists(grouped_path):
         print_highlighted(f"Loading grouped dataset from {grouped_path}")
         lm_datasets = load_from_disk(grouped_path)

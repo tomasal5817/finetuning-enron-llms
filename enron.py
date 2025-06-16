@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 from typing import Tuple
 import datasets
 import pandas as pd
@@ -61,19 +64,7 @@ class CustomEnron(datasets.GeneratorBasedBuilder):
         self.data = [item for item in self.df["train"]["text"]]
         if self.config.shuffle_facts_seed > 0:
             self.data = [self.data[i] for i in rnd_idx(N=len(self.data), seed=self.config.shuffle_facts_seed)]
-        '''
-        all_texts = (
-            self.df["train"]["text"]
-            + self.df.get("test", {"text": []})["text"]
-            + self.df.get("validation", {"text": []})["text"]
-        )
         
-        # Shuffle
-        if self.config.shuffle_facts_seed > 0:
-            all_texts = [all_texts[i] for i in rnd_idx(N=len(all_texts), seed=self.config.shuffle_facts_seed)]
-
-        self.data = all_texts
-        '''
         return [
             datasets.SplitGenerator(  
                 name=datasets.Split.TRAIN,
