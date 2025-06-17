@@ -1,6 +1,6 @@
 # README
 
-This repository is a part of the master thesis  **"Assessing Privacy vs. Efficiency Trade-offs in Open-Source Large Language Models"**, during 2025. It supports fine-tuning a range of open-source language models such as Qwen3-8B (https://huggingface.co/Qwen/Qwen3-8B) on the Enron email dataset (https://huggingface.co/datasets/LLM-PBE/enron-email/tree/main). //
+This repository is a part of the master thesis  **"Assessing Privacy vs. Efficiency Trade-offs in Open-Source Large Language Models"**, during 2025. It supports fine-tuning a range of open-source language models such as Qwen3-8B (https://huggingface.co/Qwen/Qwen3-8B) on the Enron email dataset (https://huggingface.co/datasets/LLM-PBE/enron-email/tree/main).
 
 Models fine-tuned during the master thesis using this code can be found on Hugging Face: https://huggingface.co/Tomasal 
 
