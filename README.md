@@ -4,7 +4,9 @@ This repository is a part of the master thesis Assessing privacy vs. efficiency 
 Qwen3-8B https://huggingface.co/Qwen/Qwen3-8B on the the Enron email dataset.
 
 ## Setup environment:
+```bash
   - conda create -n finetune-env python=3.10
   - conda activate finetune-env
   - pip install -r requirements.txt
+```
  
