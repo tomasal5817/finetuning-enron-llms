@@ -30,21 +30,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FineTuneArgs:
-    resume_from_checkpoint: bool = field(default=False, help="Resume training from last checkpoint")
-    model_name: str = field(default="Qwen/Qwen3-8B", help="Base model name (from Hugging Face)")
-    dataset_path: str = field(default="", help="Path to JSON dataset with 'text'")
-    output_dir: str = field(default="./output", help="Directory to save the fine-tuned model")
-    use_lora: bool = field(default=True, help=" Use LoRA for parameter-efficient tuning ")
-    precision: str = field(default="bf16", help="fp16 or bf16")
-    push_to_hub: bool = field(default=False, help="If true, pushes model to Hugging Face Hub")
-    hub_token: Optional[str] = field(default=None, help="Hugging Face token (required if pushing to hub)")
-    num_train_epochs: int = field(default=3, help="Number of training epochs")
-    per_device_train_batch_size: int = field(default=2, help="Training batch size per device")  # Reduced to prevent GPU memory overflow
-    per_device_eval_batch_size: int = field(default=2, help="Evaluation batch size per device")
-    gradient_accumulation_steps: int = field(default=1, help="Simulated larger batch size via gradient accumulation") # Batch size = per_device_train_batch_size *  gradient_accumulation_steps 
-    use_enron: bool = field(default=True, help="If true, loads and tokenizes the Enron dataset")
-    seed: int = field(default=42, help="Sets the seed to make results repeatable") # Used by transformers library
-    block_size: int = field(default=512, help="Chunk length for language modeling token blocks") # Maximum sequence length per training example (in tokens)  
+    resume_from_checkpoint: bool = field(default=False, metadata={"help": "Resume training from last checkpoint"})
+    model_name: str = field(default="Qwen/Qwen3-8B", metadata={"help": "Base model name (from Hugging Face)"})
+    dataset_path: str = field(default="", metadata={"help": "Path to JSON dataset with 'text'"})
+    output_dir: str = field(default="./output", metadata={"help": "Directory to save the fine-tuned model"})
+    use_lora: bool = field(default=True, metadata={"help": "Use LoRA for parameter-efficient tuning"})
+    precision: str = field(default="bf16", metadata={"help": "Precision format: fp16, bf16, or fp32"})
+    push_to_hub: bool = field(default=False, metadata={"help": "If true, pushes model to Hugging Face Hub"})
+    hub_token: Optional[str] = field(default=None, metadata={"help": "Hugging Face token (required if pushing to hub)"})
+    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
+    per_device_train_batch_size: int = field(default=2, metadata={"help": "Training batch size per device"})  # Reduced to prevent GPU memory overflow
+    per_device_eval_batch_size: int = field(default=2, metadata={"help": "Evaluation batch size per device"})
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Simulated larger batch size via gradient accumulation"}) # Batch size = per_device_train_batch_size *  gradient_accumulation_steps 
+    use_enron: bool = field(default=True, metadata={"help": "If true, loads and tokenizes the Enron dataset"})
+    seed: int = field(default=42, metadata={"help": "Sets the seed to make results repeatable"})  # Used by transformers library
+    block_size: int = field(default=512, metadata={"help": "Chunk length for language modeling token blocks"})  # Maximum sequence length per training example (in tokens)  
 
 def load_enron_dataset():
     try:
